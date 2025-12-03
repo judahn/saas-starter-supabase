@@ -77,10 +77,10 @@ async function checkStripeCLI() {
   }
 }
 
-async function getPostgresURL(): Promise<string> {
-  console.log('Step 2: Setting up Postgres');
+async function getDatabaseURL(): Promise<string> {
+  console.log('Step 2: Setting up Database');
   const dbChoice = await question(
-    'Do you want to use a local Postgres instance with Docker (L) or a remote Postgres instance (R)? (L/R): '
+    'Do you want to use a local Postgres instance with Docker (L) or Supabase/remote Postgres (R)? (L/R): '
   );
 
   if (dbChoice.toLowerCase() === 'l') {
@@ -89,9 +89,12 @@ async function getPostgresURL(): Promise<string> {
     return 'postgres://postgres:postgres@localhost:54322/postgres';
   } else {
     console.log(
-      'You can find Postgres databases at: https://vercel.com/marketplace?category=databases'
+      'For Supabase: Go to Project Settings > Database > Connection string > URI'
     );
-    return await question('Enter your POSTGRES_URL: ');
+    console.log(
+      'Use the "Transaction" pooler connection string for serverless environments.'
+    );
+    return await question('Enter your DATABASE_URL: ');
   }
 }
 
@@ -196,14 +199,14 @@ async function writeEnvFile(envVars: Record<string, string>) {
 async function main() {
   await checkStripeCLI();
 
-  const POSTGRES_URL = await getPostgresURL();
+  const DATABASE_URL = await getDatabaseURL();
   const STRIPE_SECRET_KEY = await getStripeSecretKey();
   const STRIPE_WEBHOOK_SECRET = await createStripeWebhook();
   const BASE_URL = 'http://localhost:3000';
   const AUTH_SECRET = generateAuthSecret();
 
   await writeEnvFile({
-    POSTGRES_URL,
+    DATABASE_URL,
     STRIPE_SECRET_KEY,
     STRIPE_WEBHOOK_SECRET,
     BASE_URL,

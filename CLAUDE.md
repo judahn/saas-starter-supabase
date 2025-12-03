@@ -38,14 +38,13 @@ Located in `lib/db/schema.ts`:
 
 ## Environment Variables
 ```
-# Current (Postgres)
-POSTGRES_URL=
+# Supabase Database (use Transaction pooler connection string)
+DATABASE_URL=postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres
 
-# Target (Supabase)
+# Optional: For future Supabase features (Auth, Storage, Realtime)
 SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
-DATABASE_URL=  # Supabase connection string for Drizzle
 ```
 
 ## Commands
