@@ -1,8 +1,6 @@
-# Next.js SaaS Starter
+# Next.js SaaS Starter (Unofficial Supabase Fork)
 
-This is a starter template for building a SaaS application using **Next.js** with support for authentication, Stripe integration for payments, and a dashboard for logged-in users.
-
-**Demo: [https://next-saas-start.vercel.app/](https://next-saas-start.vercel.app/)**
+This is a starter template for building a SaaS application using **Next.js** with **Supabase** for authentication and database, plus Stripe integration for payments.
 
 ## Features
 
@@ -11,7 +9,8 @@ This is a starter template for building a SaaS application using **Next.js** wit
 - Dashboard pages with CRUD operations on users/teams
 - Basic RBAC with Owner and Member roles
 - Subscription management with Stripe Customer Portal
-- Email/password authentication with JWTs stored to cookies
+- Email/password authentication with Supabase Auth
+- Team invitation system with email invites
 - Global middleware to protect logged-in routes
 - Local middleware to protect Server Actions or validate Zod schemas
 - Activity logging system for any user events
@@ -19,48 +18,122 @@ This is a starter template for building a SaaS application using **Next.js** wit
 ## Tech Stack
 
 - **Framework**: [Next.js](https://nextjs.org/)
-- **Database**: [Postgres](https://www.postgresql.org/)
-- **ORM**: [Drizzle](https://orm.drizzle.team/)
+- **Database**: [Supabase](https://supabase.com/) (PostgreSQL)
+- **Auth**: [Supabase Auth](https://supabase.com/docs/guides/auth)
 - **Payments**: [Stripe](https://stripe.com/)
 - **UI Library**: [shadcn/ui](https://ui.shadcn.com/)
 
 ## Getting Started
 
 ```bash
-git clone https://github.com/nextjs/saas-starter
-cd saas-starter
+git clone https://github.com/your-username/saas-starter-supabase
+cd saas-starter-supabase
 pnpm install
+```
+
+## Supabase Setup
+
+1. Create a new project at [supabase.com](https://supabase.com)
+
+2. Run the following SQL in the Supabase SQL Editor to create the required tables:
+
+```sql
+-- Teams table
+CREATE TABLE teams (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+  stripe_customer_id TEXT UNIQUE,
+  stripe_subscription_id TEXT UNIQUE,
+  stripe_product_id TEXT,
+  plan_name VARCHAR(50),
+  subscription_status VARCHAR(20)
+);
+
+-- Team members (links Supabase Auth users to teams)
+CREATE TABLE team_members (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  role VARCHAR(50) NOT NULL,
+  joined_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+
+-- Activity logs
+CREATE TABLE activity_logs (
+  id SERIAL PRIMARY KEY,
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+  ip_address VARCHAR(45)
+);
+
+-- Invitations
+CREATE TABLE invitations (
+  id SERIAL PRIMARY KEY,
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  email VARCHAR(255) NOT NULL,
+  role VARCHAR(50) NOT NULL,
+  invited_by UUID NOT NULL REFERENCES auth.users(id),
+  invited_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending'
+);
+
+-- Indexes for performance
+CREATE INDEX idx_team_members_user_id ON team_members(user_id);
+CREATE INDEX idx_team_members_team_id ON team_members(team_id);
+CREATE INDEX idx_activity_logs_team_id ON activity_logs(team_id);
+CREATE INDEX idx_invitations_email ON invitations(email);
+CREATE INDEX idx_invitations_team_id ON invitations(team_id);
+```
+
+3. Copy your Supabase credentials from **Project Settings > API**:
+   - Project URL
+   - `anon` public key
+   - `service_role` secret key
+
+## Environment Variables
+
+Create a `.env` file in the root directory with the following variables:
+
+```env
+# Supabase Configuration
+NEXT_PUBLIC_SUPABASE_URL=https://[project-ref].supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# Stripe
+STRIPE_SECRET_KEY=sk_test_***
+STRIPE_WEBHOOK_SECRET=whsec_***
+
+# App
+BASE_URL=http://localhost:3000
 ```
 
 ## Running Locally
 
-[Install](https://docs.stripe.com/stripe-cli) and log in to your Stripe account:
+1. [Install](https://docs.stripe.com/stripe-cli) and log in to your Stripe account:
 
 ```bash
 stripe login
 ```
 
-Use the included setup script to create your `.env` file:
+2. Seed the database with a default user and team:
 
 ```bash
-pnpm db:setup
-```
-
-Run the database migrations and seed the database with a default user and team:
-
-```bash
-pnpm db:migrate
 pnpm db:seed
 ```
 
-This will create the following user and team:
+This will create the following test user:
 
 - User: `test@test.com`
 - Password: `admin123`
 
 You can also create new users through the `/sign-up` route.
 
-Finally, run the Next.js development server:
+3. Run the Next.js development server:
 
 ```bash
 pnpm dev
@@ -68,7 +141,7 @@ pnpm dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser to see the app in action.
 
-You can listen for Stripe webhooks locally through their CLI to handle subscription change events:
+4. Listen for Stripe webhooks locally:
 
 ```bash
 stripe listen --forward-to localhost:3000/api/stripe/webhook
@@ -100,13 +173,16 @@ When you're ready to deploy your SaaS application to production, follow these st
 
 ### Add environment variables
 
-In your Vercel project settings (or during deployment), add all the necessary environment variables. Make sure to update the values for the production environment, including:
+In your Vercel project settings (or during deployment), add all the necessary environment variables:
 
-1. `BASE_URL`: Set this to your production domain.
-2. `STRIPE_SECRET_KEY`: Use your Stripe secret key for the production environment.
-3. `STRIPE_WEBHOOK_SECRET`: Use the webhook secret from the production webhook you created in step 1.
-4. `DATABASE_URL`: Set this to your Supabase connection string (use Transaction pooler).
-5. `AUTH_SECRET`: Set this to a random string. `openssl rand -base64 32` will generate one.
+| Variable                        | Description                                             |
+| ------------------------------- | ------------------------------------------------------- |
+| `NEXT_PUBLIC_SUPABASE_URL`      | Your Supabase project URL                               |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Your Supabase anon/public key                           |
+| `SUPABASE_SERVICE_ROLE_KEY`     | Your Supabase service role key (keep secret!)           |
+| `STRIPE_SECRET_KEY`             | Your Stripe secret key for production                   |
+| `STRIPE_WEBHOOK_SECRET`         | Webhook secret from production webhook                  |
+| `BASE_URL`                      | Your production domain (e.g., `https://yourdomain.com`) |
 
 ## Other Templates
 
