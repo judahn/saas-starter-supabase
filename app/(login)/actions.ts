@@ -283,6 +283,39 @@ export const updatePassword = validatedActionWithUser(
   }
 );
 
+const setInitialPasswordSchema = z.object({
+  password: z.string().min(8).max(100),
+  confirmPassword: z.string().min(8).max(100)
+});
+
+export const setInitialPassword = validatedActionWithUser(
+  setInitialPasswordSchema,
+  async (data, _, user) => {
+    const { password, confirmPassword } = data;
+
+    if (password !== confirmPassword) {
+      return {
+        error: 'Passwords do not match.'
+      };
+    }
+
+    const supabase = await createServerSupabaseClient();
+    const { error: updateError } = await supabase.auth.updateUser({
+      password
+    });
+
+    if (updateError) {
+      return {
+        error: 'Failed to set password. Please try again.'
+      };
+    }
+
+    return {
+      success: 'Password set successfully.'
+    };
+  }
+);
+
 const deleteAccountSchema = z.object({
   password: z.string().min(8).max(100)
 });
@@ -439,24 +472,45 @@ export const inviteTeamMember = validatedActionWithUser(
       return { error: 'An invitation has already been sent to this email' };
     }
 
-    // Create a new invitation
+    // Create a new invitation record
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (adminSupabase.from('invitations') as any).insert({
-      team_id: userWithTeam.teamId,
-      email,
-      role,
-      invited_by: user.id,
-      status: 'pending'
+    const { data: invitation } = await (adminSupabase.from('invitations') as any)
+      .insert({
+        team_id: userWithTeam.teamId,
+        email,
+        role,
+        invited_by: user.id,
+        status: 'pending'
+      })
+      .select()
+      .single();
+
+    // Send invite email via Supabase Auth
+    // The user metadata will be used to link them to the team when they accept
+    const { error: inviteError } = await adminSupabase.auth.admin.inviteUserByEmail(email, {
+      redirectTo: `${process.env.BASE_URL}/auth/callback`,
+      data: {
+        invited_team_id: userWithTeam.teamId,
+        invited_role: role,
+        invitation_id: invitation?.id,
+      }
     });
+
+    if (inviteError) {
+      // Clean up the invitation record if email failed
+      if (invitation?.id) {
+        await (adminSupabase.from('invitations') as any)
+          .delete()
+          .eq('id', invitation.id);
+      }
+      return { error: `Failed to send invitation: ${inviteError.message}` };
+    }
 
     await logActivity(
       userWithTeam.teamId,
       user.id,
       ActivityType.INVITE_TEAM_MEMBER
     );
-
-    // TODO: Send invitation email and include ?inviteId={id} to sign-up URL
-    // await sendInvitationEmail(email, userWithTeam.team.name, role)
 
     return { success: 'Invitation sent successfully' };
   }

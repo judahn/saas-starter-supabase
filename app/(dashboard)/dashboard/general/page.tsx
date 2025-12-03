@@ -7,9 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Loader2 } from 'lucide-react';
 import { updateAccount } from '@/app/(login)/actions';
-import { User } from '@/lib/db/types';
+import type { User } from '@supabase/supabase-js';
 import useSWR from 'swr';
-import { Suspense } from 'react';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -19,60 +18,8 @@ type ActionState = {
   success?: string;
 };
 
-type AccountFormProps = {
-  state: ActionState;
-  nameValue?: string;
-  emailValue?: string;
-};
-
-function AccountForm({
-  state,
-  nameValue = '',
-  emailValue = ''
-}: AccountFormProps) {
-  return (
-    <>
-      <div>
-        <Label htmlFor="name" className="mb-2">
-          Name
-        </Label>
-        <Input
-          id="name"
-          name="name"
-          placeholder="Enter your name"
-          defaultValue={state.name || nameValue}
-          required
-        />
-      </div>
-      <div>
-        <Label htmlFor="email" className="mb-2">
-          Email
-        </Label>
-        <Input
-          id="email"
-          name="email"
-          type="email"
-          placeholder="Enter your email"
-          defaultValue={emailValue}
-          required
-        />
-      </div>
-    </>
-  );
-}
-
-function AccountFormWithData({ state }: { state: ActionState }) {
-  const { data: user } = useSWR<User>('/api/user', fetcher);
-  return (
-    <AccountForm
-      state={state}
-      nameValue={user?.name ?? ''}
-      emailValue={user?.email ?? ''}
-    />
-  );
-}
-
 export default function GeneralPage() {
+  const { data: user, isLoading } = useSWR<User>('/api/user', fetcher);
   const [state, formAction, isPending] = useActionState<ActionState, FormData>(
     updateAccount,
     {}
@@ -90,9 +37,33 @@ export default function GeneralPage() {
         </CardHeader>
         <CardContent>
           <form className="space-y-4" action={formAction}>
-            <Suspense fallback={<AccountForm state={state} />}>
-              <AccountFormWithData state={state} />
-            </Suspense>
+            <div>
+              <Label htmlFor="name" className="mb-2">
+                Name
+              </Label>
+              <Input
+                id="name"
+                name="name"
+                placeholder="Enter your name"
+                defaultValue={state.name || user?.user_metadata?.name || ''}
+                disabled={isLoading}
+                required
+              />
+            </div>
+            <div>
+              <Label htmlFor="email" className="mb-2">
+                Email
+              </Label>
+              <Input
+                id="email"
+                name="email"
+                type="email"
+                placeholder="Enter your email"
+                defaultValue={user?.email || ''}
+                disabled={isLoading}
+                required
+              />
+            </div>
             {state.error && (
               <p className="text-red-500 text-sm">{state.error}</p>
             )}
