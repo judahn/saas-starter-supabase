@@ -1,8 +1,11 @@
-import { stripe } from '../payments/stripe';
-import { createClient } from '@supabase/supabase-js';
+// Load env vars BEFORE any imports that use them
 import dotenv from 'dotenv';
-
 dotenv.config();
+
+import Stripe from 'stripe';
+import { createClient } from '@supabase/supabase-js';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 // Create admin client for seeding
 const supabase = createClient(
@@ -57,14 +60,15 @@ async function seed() {
   const password = 'admin123';
 
   // Create user with Supabase Auth
-  const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true, // Auto-confirm email for test user
-    user_metadata: {
-      name: 'Test User',
-    },
-  });
+  const { data: authData, error: authError } =
+    await supabase.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true, // Auto-confirm email for test user
+      user_metadata: {
+        name: 'Test User',
+      },
+    });
 
   if (authError || !authData.user) {
     console.error('Failed to create auth user:', authError);
@@ -88,13 +92,11 @@ async function seed() {
   console.log('Team created.');
 
   // Create team membership
-  const { error: memberError } = await supabase
-    .from('team_members')
-    .insert({
-      team_id: team.id,
-      user_id: authData.user.id,
-      role: 'owner',
-    });
+  const { error: memberError } = await supabase.from('team_members').insert({
+    team_id: team.id,
+    user_id: authData.user.id,
+    role: 'owner',
+  });
 
   if (memberError) {
     console.error('Failed to create team member:', memberError);

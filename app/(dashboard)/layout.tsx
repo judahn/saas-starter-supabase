@@ -51,10 +51,12 @@ function UserMenu() {
         <Avatar className="cursor-pointer size-9">
           <AvatarImage alt={user.name || ''} />
           <AvatarFallback>
-            {user.email
+            {(user.user_metadata?.name || user.email || '?')
               .split(' ')
-              .map((n) => n[0])
-              .join('')}
+              .map((n: string) => n[0])
+              .join('')
+              .slice(0, 2)
+              .toUpperCase()}
           </AvatarFallback>
         </Avatar>
       </DropdownMenuTrigger>
