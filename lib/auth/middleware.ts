@@ -1,40 +1,45 @@
 import { z } from 'zod';
-import { TeamDataWithMembers, User } from '@/lib/db/schema';
+import type { User } from '@supabase/supabase-js';
+import { TeamDataWithMembers } from '@/lib/db/types';
 import { getTeamForUser, getUser } from '@/lib/db/queries';
 import { redirect } from 'next/navigation';
 
 export type ActionState = {
   error?: string;
   success?: string;
-  [key: string]: any; // This allows for additional properties
+  email?: string;
+  password?: string;
+  [key: string]: unknown;
 };
 
-type ValidatedActionFunction<S extends z.ZodType<any, any>, T> = (
+type ValidatedActionFunction<S extends z.ZodType<unknown, z.ZodTypeDef>> = (
   data: z.infer<S>,
   formData: FormData
-) => Promise<T>;
+) => Promise<ActionState | void>;
 
-export function validatedAction<S extends z.ZodType<any, any>, T>(
+export function validatedAction<S extends z.ZodType<unknown, z.ZodTypeDef>>(
   schema: S,
-  action: ValidatedActionFunction<S, T>
+  action: ValidatedActionFunction<S>
 ) {
-  return async (prevState: ActionState, formData: FormData) => {
+  return async (prevState: ActionState, formData: FormData): Promise<ActionState> => {
     const result = schema.safeParse(Object.fromEntries(formData));
     if (!result.success) {
       return { error: result.error.errors[0].message };
     }
 
-    return action(result.data, formData);
+    const actionResult = await action(result.data, formData);
+    // If action returns void (e.g., redirect was called), return empty state
+    return actionResult ?? {};
   };
 }
 
-type ValidatedActionWithUserFunction<S extends z.ZodType<any, any>, T> = (
+type ValidatedActionWithUserFunction<S extends z.ZodType<unknown, z.ZodTypeDef>, T> = (
   data: z.infer<S>,
   formData: FormData,
   user: User
 ) => Promise<T>;
 
-export function validatedActionWithUser<S extends z.ZodType<any, any>, T>(
+export function validatedActionWithUser<S extends z.ZodType<unknown, z.ZodTypeDef>, T>(
   schema: S,
   action: ValidatedActionWithUserFunction<S, T>
 ) {
@@ -65,7 +70,7 @@ export function withTeam<T>(action: ActionWithTeamFunction<T>) {
       redirect('/sign-in');
     }
 
-    const team = await getTeamForUser();
+    const team = await getTeamForUser(user.id);
     if (!team) {
       throw new Error('Team not found');
     }

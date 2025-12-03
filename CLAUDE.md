@@ -1,63 +1,102 @@
-# SaaS Starter - Supabase Migration
+# SaaS Starter - Supabase
 
 ## Project Overview
-This is the Next.js SaaS Starter (https://github.com/nextjs/saas-starter) being migrated from vanilla Postgres to Supabase.
+Next.js SaaS Starter with Supabase backend (Auth, Database).
 
 ## Tech Stack
 - **Framework**: Next.js 15 (App Router)
-- **Database**: Supabase (PostgreSQL) - migrating from postgres-js
-- **ORM**: Drizzle ORM
-- **Auth**: Custom JWT-based (stored in cookies)
+- **Database**: Supabase (PostgreSQL)
+- **Auth**: Supabase Auth
 - **Payments**: Stripe
 - **UI**: shadcn/ui + Tailwind CSS
 - **Package Manager**: pnpm
 
 ## Key Directories
 ```
-lib/db/           # Database config, schema, queries, migrations
-lib/auth/         # Authentication utilities
+lib/db/           # Supabase client, queries, types
+lib/auth/         # Auth session utilities
 app/              # Next.js app router pages
 app/api/          # API routes (Stripe webhooks, etc.)
 components/       # React components
 ```
 
-## Database Schema (Drizzle)
-Located in `lib/db/schema.ts`:
-- `users` - User accounts with email/password
+## Database Tables (Supabase)
+- `auth.users` - Supabase Auth users (name in user_metadata)
 - `teams` - Team/organization entities
-- `teamMembers` - User-team relationships (owner/member roles)
-- `activityLogs` - User activity tracking
+- `team_members` - User-team relationships (owner/member roles)
+- `activity_logs` - User activity tracking
 - `invitations` - Team invitation system
-
-## Migration Goals
-1. Replace `postgres-js` driver with `@supabase/supabase-js` or Supabase's postgres connection
-2. Update `lib/db/drizzle.ts` connection configuration
-3. Ensure Drizzle migrations work with Supabase
-4. Optionally leverage Supabase Auth (future enhancement)
-5. Maintain existing functionality
 
 ## Environment Variables
 ```
-# Supabase Database (use Transaction pooler connection string)
-DATABASE_URL=postgresql://postgres.[project-ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres
+NEXT_PUBLIC_SUPABASE_URL=https://[project-ref].supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
-# Optional: For future Supabase features (Auth, Storage, Realtime)
-SUPABASE_URL=
-SUPABASE_ANON_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
+STRIPE_SECRET_KEY=sk_test_***
+STRIPE_WEBHOOK_SECRET=whsec_***
+BASE_URL=http://localhost:3000
 ```
 
 ## Commands
 - `pnpm dev` - Start development server
-- `pnpm db:migrate` - Run Drizzle migrations
-- `pnpm db:seed` - Seed database
-- `pnpm db:setup` - Initial setup script
+- `pnpm db:seed` - Seed database with test user
+
+## Supabase Setup
+Run this SQL in Supabase SQL Editor to create tables:
+
+```sql
+CREATE TABLE teams (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+  stripe_customer_id TEXT UNIQUE,
+  stripe_subscription_id TEXT UNIQUE,
+  stripe_product_id TEXT,
+  plan_name VARCHAR(50),
+  subscription_status VARCHAR(20)
+);
+
+CREATE TABLE team_members (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  role VARCHAR(50) NOT NULL,
+  joined_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+);
+
+CREATE TABLE activity_logs (
+  id SERIAL PRIMARY KEY,
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+  ip_address VARCHAR(45)
+);
+
+CREATE TABLE invitations (
+  id SERIAL PRIMARY KEY,
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  email VARCHAR(255) NOT NULL,
+  role VARCHAR(50) NOT NULL,
+  invited_by UUID NOT NULL REFERENCES auth.users(id),
+  invited_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending'
+);
+
+CREATE INDEX idx_team_members_user_id ON team_members(user_id);
+CREATE INDEX idx_team_members_team_id ON team_members(team_id);
+CREATE INDEX idx_activity_logs_team_id ON activity_logs(team_id);
+CREATE INDEX idx_invitations_email ON invitations(email);
+CREATE INDEX idx_invitations_team_id ON invitations(team_id);
+```
 
 ## Testing
-After migration changes, verify:
-1. `pnpm db:migrate` runs successfully
-2. `pnpm db:seed` creates test user
-3. `pnpm dev` starts without errors
-4. Sign-up flow works
-5. Team creation/invitation works
-6. Stripe integration still functional
+1. Create Supabase project and run SQL above
+2. Add env vars to `.env`
+3. `pnpm db:seed` creates test user (test@test.com / admin123)
+4. `pnpm dev` starts without errors
+5. Sign-up/sign-in flows work
+6. Team operations work
+7. Stripe integration functional

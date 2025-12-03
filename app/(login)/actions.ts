@@ -1,47 +1,39 @@
 'use server';
 
 import { z } from 'zod';
-import { and, eq, sql } from 'drizzle-orm';
-import { db } from '@/lib/db/drizzle';
-import {
-  User,
-  users,
-  teams,
-  teamMembers,
-  activityLogs,
-  type NewUser,
-  type NewTeam,
-  type NewTeamMember,
-  type NewActivityLog,
-  ActivityType,
-  invitations
-} from '@/lib/db/schema';
-import { comparePasswords, hashPassword, setSession } from '@/lib/auth/session';
 import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
+import { createServerSupabaseClient } from '@/lib/db/server';
+import { createAdminClient } from '@/lib/db/supabase';
 import { createCheckoutSession } from '@/lib/payments/stripe';
 import { getUser, getUserWithTeam } from '@/lib/db/queries';
 import {
   validatedAction,
   validatedActionWithUser
 } from '@/lib/auth/middleware';
+import {
+  ActivityType,
+  type Team,
+  type TeamMember,
+  type Invitation,
+} from '@/lib/db/types';
 
 async function logActivity(
   teamId: number | null | undefined,
-  userId: number,
+  userId: string,
   type: ActivityType,
   ipAddress?: string
 ) {
   if (teamId === null || teamId === undefined) {
     return;
   }
-  const newActivity: NewActivityLog = {
-    teamId,
-    userId,
+  const supabase = createAdminClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (supabase.from('activity_logs') as any).insert({
+    team_id: teamId,
+    user_id: userId,
     action: type,
-    ipAddress: ipAddress || ''
-  };
-  await db.insert(activityLogs).values(newActivity);
+    ip_address: ipAddress || '',
+  });
 }
 
 const signInSchema = z.object({
@@ -52,33 +44,13 @@ const signInSchema = z.object({
 export const signIn = validatedAction(signInSchema, async (data, formData) => {
   const { email, password } = data;
 
-  const userWithTeam = await db
-    .select({
-      user: users,
-      team: teams
-    })
-    .from(users)
-    .leftJoin(teamMembers, eq(users.id, teamMembers.userId))
-    .leftJoin(teams, eq(teamMembers.teamId, teams.id))
-    .where(eq(users.email, email))
-    .limit(1);
-
-  if (userWithTeam.length === 0) {
-    return {
-      error: 'Invalid email or password. Please try again.',
-      email,
-      password
-    };
-  }
-
-  const { user: foundUser, team: foundTeam } = userWithTeam[0];
-
-  const isPasswordValid = await comparePasswords(
+  const supabase = await createServerSupabaseClient();
+  const { data: authData, error } = await supabase.auth.signInWithPassword({
+    email,
     password,
-    foundUser.passwordHash
-  );
+  });
 
-  if (!isPasswordValid) {
+  if (error || !authData.user) {
     return {
       error: 'Invalid email or password. Please try again.',
       email,
@@ -86,15 +58,28 @@ export const signIn = validatedAction(signInSchema, async (data, formData) => {
     };
   }
 
-  await Promise.all([
-    setSession(foundUser),
-    logActivity(foundTeam?.id, foundUser.id, ActivityType.SIGN_IN)
-  ]);
+  // Get user's team for activity logging
+  const adminSupabase = createAdminClient();
+  const { data: teamMember } = await adminSupabase
+    .from('team_members')
+    .select('team_id')
+    .eq('user_id', authData.user.id)
+    .single();
+
+  if (teamMember) {
+    await logActivity((teamMember as TeamMember).team_id, authData.user.id, ActivityType.SIGN_IN);
+  }
 
   const redirectTo = formData.get('redirect') as string | null;
   if (redirectTo === 'checkout') {
     const priceId = formData.get('priceId') as string;
-    return createCheckoutSession({ team: foundTeam, priceId });
+    // Get team for checkout
+    const { data: team } = await adminSupabase
+      .from('teams')
+      .select('*')
+      .eq('id', (teamMember as TeamMember)?.team_id)
+      .single();
+    return createCheckoutSession({ team: team as Team | null, priceId });
   }
 
   redirect('/dashboard');
@@ -109,84 +94,78 @@ const signUpSchema = z.object({
 export const signUp = validatedAction(signUpSchema, async (data, formData) => {
   const { email, password, inviteId } = data;
 
-  const existingUser = await db
-    .select()
-    .from(users)
-    .where(eq(users.email, email))
-    .limit(1);
+  const supabase = await createServerSupabaseClient();
+  const adminSupabase = createAdminClient();
 
-  if (existingUser.length > 0) {
-    return {
-      error: 'Failed to create user. Please try again.',
-      email,
-      password
-    };
-  }
-
-  const passwordHash = await hashPassword(password);
-
-  const newUser: NewUser = {
+  // Sign up with Supabase Auth
+  const { data: authData, error: authError } = await supabase.auth.signUp({
     email,
-    passwordHash,
-    role: 'owner' // Default role, will be overridden if there's an invitation
-  };
+    password,
+    options: {
+      data: {
+        name: null, // Can be updated later
+      }
+    }
+  });
 
-  const [createdUser] = await db.insert(users).values(newUser).returning();
-
-  if (!createdUser) {
+  if (authError || !authData.user) {
     return {
-      error: 'Failed to create user. Please try again.',
+      error: authError?.message || 'Failed to create user. Please try again.',
       email,
       password
     };
   }
 
+  const userId = authData.user.id;
   let teamId: number;
   let userRole: string;
-  let createdTeam: typeof teams.$inferSelect | null = null;
+  let createdTeam: Team | null = null;
 
   if (inviteId) {
     // Check if there's a valid invitation
-    const [invitation] = await db
-      .select()
-      .from(invitations)
-      .where(
-        and(
-          eq(invitations.id, parseInt(inviteId)),
-          eq(invitations.email, email),
-          eq(invitations.status, 'pending')
-        )
-      )
-      .limit(1);
+    const { data: invitation } = await adminSupabase
+      .from('invitations')
+      .select('*')
+      .eq('id', parseInt(inviteId))
+      .eq('email', email)
+      .eq('status', 'pending')
+      .single();
 
     if (invitation) {
-      teamId = invitation.teamId;
-      userRole = invitation.role;
+      const inv = invitation as Invitation;
+      teamId = inv.team_id;
+      userRole = inv.role;
 
-      await db
-        .update(invitations)
-        .set({ status: 'accepted' })
-        .where(eq(invitations.id, invitation.id));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (adminSupabase.from('invitations') as any)
+        .update({ status: 'accepted' })
+        .eq('id', inv.id);
 
-      await logActivity(teamId, createdUser.id, ActivityType.ACCEPT_INVITATION);
+      await logActivity(teamId, userId, ActivityType.ACCEPT_INVITATION);
 
-      [createdTeam] = await db
-        .select()
-        .from(teams)
-        .where(eq(teams.id, teamId))
-        .limit(1);
+      const { data: team } = await adminSupabase
+        .from('teams')
+        .select('*')
+        .eq('id', teamId)
+        .single();
+
+      createdTeam = team as Team;
     } else {
+      // Delete the auth user since invitation is invalid
+      await adminSupabase.auth.admin.deleteUser(userId);
       return { error: 'Invalid or expired invitation.', email, password };
     }
   } else {
     // Create a new team if there's no invitation
-    const newTeam: NewTeam = {
-      name: `${email}'s Team`
-    };
+    const { data: newTeam, error: teamError } = await adminSupabase
+      .from('teams')
+      .insert({ name: `${email}'s Team` })
+      .select()
+      .single();
 
-    [createdTeam] = await db.insert(teams).values(newTeam).returning();
-
-    if (!createdTeam) {
+    if (teamError || !newTeam) {
+      // Delete the auth user since team creation failed
+      await adminSupabase.auth.admin.deleteUser(userId);
       return {
         error: 'Failed to create team. Please try again.',
         email,
@@ -194,23 +173,26 @@ export const signUp = validatedAction(signUpSchema, async (data, formData) => {
       };
     }
 
+    createdTeam = newTeam as Team;
     teamId = createdTeam.id;
     userRole = 'owner';
 
-    await logActivity(teamId, createdUser.id, ActivityType.CREATE_TEAM);
+    await logActivity(teamId, userId, ActivityType.CREATE_TEAM);
   }
 
-  const newTeamMember: NewTeamMember = {
-    userId: createdUser.id,
-    teamId: teamId,
-    role: userRole
-  };
+  // Create team membership
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { error: memberError } = await (adminSupabase.from('team_members') as any).insert({
+    user_id: userId,
+    team_id: teamId,
+    role: userRole,
+  });
 
-  await Promise.all([
-    db.insert(teamMembers).values(newTeamMember),
-    logActivity(teamId, createdUser.id, ActivityType.SIGN_UP),
-    setSession(createdUser)
-  ]);
+  if (memberError) {
+    console.error('Failed to create team member:', memberError);
+  }
+
+  await logActivity(teamId, userId, ActivityType.SIGN_UP);
 
   const redirectTo = formData.get('redirect') as string | null;
   if (redirectTo === 'checkout') {
@@ -222,10 +204,16 @@ export const signUp = validatedAction(signUpSchema, async (data, formData) => {
 });
 
 export async function signOut() {
-  const user = (await getUser()) as User;
-  const userWithTeam = await getUserWithTeam(user.id);
-  await logActivity(userWithTeam?.teamId, user.id, ActivityType.SIGN_OUT);
-  (await cookies()).delete('session');
+  const supabase = await createServerSupabaseClient();
+  const user = await getUser();
+
+  if (user) {
+    const userWithTeam = await getUserWithTeam(user.id);
+    await logActivity(userWithTeam?.teamId, user.id, ActivityType.SIGN_OUT);
+  }
+
+  await supabase.auth.signOut();
+  redirect('/sign-in');
 }
 
 const updatePasswordSchema = z.object({
@@ -239,12 +227,14 @@ export const updatePassword = validatedActionWithUser(
   async (data, _, user) => {
     const { currentPassword, newPassword, confirmPassword } = data;
 
-    const isPasswordValid = await comparePasswords(
-      currentPassword,
-      user.passwordHash
-    );
+    // Verify current password by trying to sign in
+    const supabase = await createServerSupabaseClient();
+    const { error: verifyError } = await supabase.auth.signInWithPassword({
+      email: user.email!,
+      password: currentPassword,
+    });
 
-    if (!isPasswordValid) {
+    if (verifyError) {
       return {
         currentPassword,
         newPassword,
@@ -271,16 +261,21 @@ export const updatePassword = validatedActionWithUser(
       };
     }
 
-    const newPasswordHash = await hashPassword(newPassword);
-    const userWithTeam = await getUserWithTeam(user.id);
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: newPassword
+    });
 
-    await Promise.all([
-      db
-        .update(users)
-        .set({ passwordHash: newPasswordHash })
-        .where(eq(users.id, user.id)),
-      logActivity(userWithTeam?.teamId, user.id, ActivityType.UPDATE_PASSWORD)
-    ]);
+    if (updateError) {
+      return {
+        currentPassword,
+        newPassword,
+        confirmPassword,
+        error: 'Failed to update password. Please try again.'
+      };
+    }
+
+    const userWithTeam = await getUserWithTeam(user.id);
+    await logActivity(userWithTeam?.teamId, user.id, ActivityType.UPDATE_PASSWORD);
 
     return {
       success: 'Password updated successfully.'
@@ -297,8 +292,14 @@ export const deleteAccount = validatedActionWithUser(
   async (data, _, user) => {
     const { password } = data;
 
-    const isPasswordValid = await comparePasswords(password, user.passwordHash);
-    if (!isPasswordValid) {
+    // Verify password
+    const supabase = await createServerSupabaseClient();
+    const { error: verifyError } = await supabase.auth.signInWithPassword({
+      email: user.email!,
+      password,
+    });
+
+    if (verifyError) {
       return {
         password,
         error: 'Incorrect password. Account deletion failed.'
@@ -306,34 +307,23 @@ export const deleteAccount = validatedActionWithUser(
     }
 
     const userWithTeam = await getUserWithTeam(user.id);
+    await logActivity(userWithTeam?.teamId, user.id, ActivityType.DELETE_ACCOUNT);
 
-    await logActivity(
-      userWithTeam?.teamId,
-      user.id,
-      ActivityType.DELETE_ACCOUNT
-    );
+    const adminSupabase = createAdminClient();
 
-    // Soft delete
-    await db
-      .update(users)
-      .set({
-        deletedAt: sql`CURRENT_TIMESTAMP`,
-        email: sql`CONCAT(email, '-', id, '-deleted')` // Ensure email uniqueness
-      })
-      .where(eq(users.id, user.id));
-
+    // Remove from team
     if (userWithTeam?.teamId) {
-      await db
-        .delete(teamMembers)
-        .where(
-          and(
-            eq(teamMembers.userId, user.id),
-            eq(teamMembers.teamId, userWithTeam.teamId)
-          )
-        );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (adminSupabase.from('team_members') as any)
+        .delete()
+        .eq('user_id', user.id)
+        .eq('team_id', userWithTeam.teamId);
     }
 
-    (await cookies()).delete('session');
+    // Delete the auth user (this is a hard delete in Supabase)
+    await adminSupabase.auth.admin.deleteUser(user.id);
+
+    await supabase.auth.signOut();
     redirect('/sign-in');
   }
 );
@@ -347,12 +337,25 @@ export const updateAccount = validatedActionWithUser(
   updateAccountSchema,
   async (data, _, user) => {
     const { name, email } = data;
-    const userWithTeam = await getUserWithTeam(user.id);
 
-    await Promise.all([
-      db.update(users).set({ name, email }).where(eq(users.id, user.id)),
-      logActivity(userWithTeam?.teamId, user.id, ActivityType.UPDATE_ACCOUNT)
-    ]);
+    const supabase = await createServerSupabaseClient();
+
+    const updates: { email?: string; data?: { name: string } } = {
+      data: { name }
+    };
+
+    if (email !== user.email) {
+      updates.email = email;
+    }
+
+    const { error } = await supabase.auth.updateUser(updates);
+
+    if (error) {
+      return { name, error: 'Failed to update account. Please try again.' };
+    }
+
+    const userWithTeam = await getUserWithTeam(user.id);
+    await logActivity(userWithTeam?.teamId, user.id, ActivityType.UPDATE_ACCOUNT);
 
     return { name, success: 'Account updated successfully.' };
   }
@@ -372,14 +375,12 @@ export const removeTeamMember = validatedActionWithUser(
       return { error: 'User is not part of a team' };
     }
 
-    await db
-      .delete(teamMembers)
-      .where(
-        and(
-          eq(teamMembers.id, memberId),
-          eq(teamMembers.teamId, userWithTeam.teamId)
-        )
-      );
+    const adminSupabase = createAdminClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (adminSupabase.from('team_members') as any)
+      .delete()
+      .eq('id', memberId)
+      .eq('team_id', userWithTeam.teamId);
 
     await logActivity(
       userWithTeam.teamId,
@@ -406,42 +407,45 @@ export const inviteTeamMember = validatedActionWithUser(
       return { error: 'User is not part of a team' };
     }
 
-    const existingMember = await db
-      .select()
-      .from(users)
-      .leftJoin(teamMembers, eq(users.id, teamMembers.userId))
-      .where(
-        and(eq(users.email, email), eq(teamMembers.teamId, userWithTeam.teamId))
-      )
-      .limit(1);
+    const adminSupabase = createAdminClient();
 
-    if (existingMember.length > 0) {
-      return { error: 'User is already a member of this team' };
+    // Check if user with this email already exists and is a team member
+    const { data: existingUsers } = await adminSupabase.auth.admin.listUsers();
+    const existingUser = existingUsers?.users?.find(u => u.email === email);
+
+    if (existingUser) {
+      const { data: existingMember } = await adminSupabase
+        .from('team_members')
+        .select('id')
+        .eq('user_id', existingUser.id)
+        .eq('team_id', userWithTeam.teamId)
+        .single();
+
+      if (existingMember) {
+        return { error: 'User is already a member of this team' };
+      }
     }
 
     // Check if there's an existing invitation
-    const existingInvitation = await db
-      .select()
-      .from(invitations)
-      .where(
-        and(
-          eq(invitations.email, email),
-          eq(invitations.teamId, userWithTeam.teamId),
-          eq(invitations.status, 'pending')
-        )
-      )
-      .limit(1);
+    const { data: existingInvitation } = await adminSupabase
+      .from('invitations')
+      .select('id')
+      .eq('email', email)
+      .eq('team_id', userWithTeam.teamId)
+      .eq('status', 'pending')
+      .single();
 
-    if (existingInvitation.length > 0) {
+    if (existingInvitation) {
       return { error: 'An invitation has already been sent to this email' };
     }
 
     // Create a new invitation
-    await db.insert(invitations).values({
-      teamId: userWithTeam.teamId,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (adminSupabase.from('invitations') as any).insert({
+      team_id: userWithTeam.teamId,
       email,
       role,
-      invitedBy: user.id,
+      invited_by: user.id,
       status: 'pending'
     });
 

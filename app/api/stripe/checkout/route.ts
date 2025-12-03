@@ -1,10 +1,8 @@
-import { eq } from 'drizzle-orm';
-import { db } from '@/lib/db/drizzle';
-import { users, teams, teamMembers } from '@/lib/db/schema';
-import { setSession } from '@/lib/auth/session';
+import { createAdminClient } from '@/lib/db/supabase';
 import { NextRequest, NextResponse } from 'next/server';
 import { stripe } from '@/lib/payments/stripe';
 import Stripe from 'stripe';
+import type { Team, TeamMember } from '@/lib/db/types';
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
@@ -54,41 +52,39 @@ export async function GET(request: NextRequest) {
       throw new Error("No user ID found in session's client_reference_id.");
     }
 
-    const user = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, Number(userId)))
-      .limit(1);
+    const supabase = createAdminClient();
 
-    if (user.length === 0) {
+    // Verify user exists
+    const { data: { user }, error: userError } = await supabase.auth.admin.getUserById(userId);
+
+    if (userError || !user) {
       throw new Error('User not found in database.');
     }
 
-    const userTeam = await db
-      .select({
-        teamId: teamMembers.teamId,
-      })
-      .from(teamMembers)
-      .where(eq(teamMembers.userId, user[0].id))
-      .limit(1);
+    // Get user's team
+    const { data: userTeam, error: teamError } = await supabase
+      .from('team_members')
+      .select('team_id')
+      .eq('user_id', userId)
+      .single();
 
-    if (userTeam.length === 0) {
+    if (teamError || !userTeam) {
       throw new Error('User is not associated with any team.');
     }
 
-    await db
-      .update(teams)
-      .set({
-        stripeCustomerId: customerId,
-        stripeSubscriptionId: subscriptionId,
-        stripeProductId: productId,
-        planName: (plan.product as Stripe.Product).name,
-        subscriptionStatus: subscription.status,
-        updatedAt: new Date(),
+    // Update team with Stripe info
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (supabase.from('teams') as any)
+      .update({
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscriptionId,
+        stripe_product_id: productId,
+        plan_name: (plan.product as Stripe.Product).name,
+        subscription_status: subscription.status,
+        updated_at: new Date().toISOString(),
       })
-      .where(eq(teams.id, userTeam[0].teamId));
+      .eq('id', (userTeam as TeamMember).team_id);
 
-    await setSession(user[0]);
     return NextResponse.redirect(new URL('/dashboard', request.url));
   } catch (error) {
     console.error('Error handling successful checkout:', error);

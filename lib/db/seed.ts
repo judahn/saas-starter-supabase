@@ -1,7 +1,20 @@
 import { stripe } from '../payments/stripe';
-import { db } from './drizzle';
-import { users, teams, teamMembers } from './schema';
-import { hashPassword } from '@/lib/auth/session';
+import { createClient } from '@supabase/supabase-js';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+// Create admin client for seeding
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  }
+);
 
 async function createStripeProducts() {
   console.log('Creating Stripe products and prices...');
@@ -42,33 +55,53 @@ async function createStripeProducts() {
 async function seed() {
   const email = 'test@test.com';
   const password = 'admin123';
-  const passwordHash = await hashPassword(password);
 
-  const [user] = await db
-    .insert(users)
-    .values([
-      {
-        email: email,
-        passwordHash: passwordHash,
-        role: "owner",
-      },
-    ])
-    .returning();
+  // Create user with Supabase Auth
+  const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true, // Auto-confirm email for test user
+    user_metadata: {
+      name: 'Test User',
+    },
+  });
+
+  if (authError || !authData.user) {
+    console.error('Failed to create auth user:', authError);
+    throw authError;
+  }
 
   console.log('Initial user created.');
 
-  const [team] = await db
-    .insert(teams)
-    .values({
-      name: 'Test Team',
-    })
-    .returning();
+  // Create team
+  const { data: team, error: teamError } = await supabase
+    .from('teams')
+    .insert({ name: 'Test Team' })
+    .select()
+    .single();
 
-  await db.insert(teamMembers).values({
-    teamId: team.id,
-    userId: user.id,
-    role: 'owner',
-  });
+  if (teamError || !team) {
+    console.error('Failed to create team:', teamError);
+    throw teamError;
+  }
+
+  console.log('Team created.');
+
+  // Create team membership
+  const { error: memberError } = await supabase
+    .from('team_members')
+    .insert({
+      team_id: team.id,
+      user_id: authData.user.id,
+      role: 'owner',
+    });
+
+  if (memberError) {
+    console.error('Failed to create team member:', memberError);
+    throw memberError;
+  }
+
+  console.log('Team membership created.');
 
   await createStripeProducts();
 }
