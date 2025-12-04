@@ -1,150 +1,16 @@
-export type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | { [key: string]: Json | undefined }
-  | Json[]
+// Re-export everything from generated types
+export * from './database.types';
 
-export type Database = {
-  public: {
-    Tables: {
-      teams: {
-        Row: {
-          id: number;
-          name: string;
-          created_at: string;
-          updated_at: string;
-          stripe_customer_id: string | null;
-          stripe_subscription_id: string | null;
-          stripe_product_id: string | null;
-          plan_name: string | null;
-          subscription_status: string | null;
-        };
-        Insert: {
-          id?: number;
-          name: string;
-          created_at?: string;
-          updated_at?: string;
-          stripe_customer_id?: string | null;
-          stripe_subscription_id?: string | null;
-          stripe_product_id?: string | null;
-          plan_name?: string | null;
-          subscription_status?: string | null;
-        };
-        Update: {
-          id?: number;
-          name?: string;
-          created_at?: string;
-          updated_at?: string;
-          stripe_customer_id?: string | null;
-          stripe_subscription_id?: string | null;
-          stripe_product_id?: string | null;
-          plan_name?: string | null;
-          subscription_status?: string | null;
-        };
-        Relationships: [];
-      };
-      team_members: {
-        Row: {
-          id: number;
-          user_id: string;
-          team_id: number;
-          role: string;
-          joined_at: string;
-        };
-        Insert: {
-          id?: number;
-          user_id: string;
-          team_id: number;
-          role: string;
-          joined_at?: string;
-        };
-        Update: {
-          id?: number;
-          user_id?: string;
-          team_id?: number;
-          role?: string;
-          joined_at?: string;
-        };
-        Relationships: [];
-      };
-      activity_logs: {
-        Row: {
-          id: number;
-          team_id: number;
-          user_id: string | null;
-          action: string;
-          timestamp: string;
-          ip_address: string | null;
-        };
-        Insert: {
-          id?: number;
-          team_id: number;
-          user_id?: string | null;
-          action: string;
-          timestamp?: string;
-          ip_address?: string | null;
-        };
-        Update: {
-          id?: number;
-          team_id?: number;
-          user_id?: string | null;
-          action?: string;
-          timestamp?: string;
-          ip_address?: string | null;
-        };
-        Relationships: [];
-      };
-      invitations: {
-        Row: {
-          id: number;
-          team_id: number;
-          email: string;
-          role: string;
-          invited_by: string;
-          invited_at: string;
-          status: string;
-        };
-        Insert: {
-          id?: number;
-          team_id: number;
-          email: string;
-          role: string;
-          invited_by: string;
-          invited_at?: string;
-          status?: string;
-        };
-        Update: {
-          id?: number;
-          team_id?: number;
-          email?: string;
-          role?: string;
-          invited_by?: string;
-          invited_at?: string;
-          status?: string;
-        };
-        Relationships: [];
-      };
-    };
-    Views: Record<string, never>;
-    Functions: Record<string, never>;
-    Enums: Record<string, never>;
-    CompositeTypes: Record<string, never>;
-  };
-};
+// Import what we need for custom types
+import type { Tables } from './database.types';
 
-// Convenience types
-export type Team = Database['public']['Tables']['teams']['Row'];
-export type NewTeam = Database['public']['Tables']['teams']['Insert'];
-export type TeamMember = Database['public']['Tables']['team_members']['Row'];
-export type NewTeamMember = Database['public']['Tables']['team_members']['Insert'];
-export type ActivityLog = Database['public']['Tables']['activity_logs']['Row'];
-export type NewActivityLog = Database['public']['Tables']['activity_logs']['Insert'];
-export type Invitation = Database['public']['Tables']['invitations']['Row'];
-export type NewInvitation = Database['public']['Tables']['invitations']['Insert'];
+// Convenience type aliases (use Tables<'name'> helper from generated file)
+export type Team = Tables<'teams'>;
+export type TeamMember = Tables<'team_members'>;
+export type ActivityLog = Tables<'activity_logs'>;
+export type Invitation = Tables<'invitations'>;
 
-// User type from Supabase Auth (with metadata)
+// User type for Supabase Auth (stored in auth.users, not our tables)
 export type User = {
   id: string;
   email: string;
@@ -152,13 +18,14 @@ export type User = {
   created_at: string;
 };
 
-// Combined types for queries
+// Combined types for queries with joins
 export type TeamDataWithMembers = Team & {
   team_members: (TeamMember & {
     user: Pick<User, 'id' | 'name' | 'email'>;
   })[];
 };
 
+// Activity types enum
 export enum ActivityType {
   SIGN_UP = 'SIGN_UP',
   SIGN_IN = 'SIGN_IN',

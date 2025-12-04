@@ -147,6 +147,36 @@ Open [http://localhost:3000](http://localhost:3000) in your browser to see the a
 stripe listen --forward-to localhost:3000/api/stripe/webhook
 ```
 
+## Generating TypeScript Types
+
+To regenerate TypeScript types from your Supabase schema:
+
+1. Install the [Supabase CLI](https://supabase.com/docs/guides/cli):
+
+```bash
+brew install supabase/tap/supabase
+```
+
+2. Log in to Supabase:
+
+```bash
+supabase login
+```
+
+3. Add your project ID to `.env`:
+
+```env
+SUPABASE_PROJECT_ID=your-project-ref
+```
+
+4. Generate types:
+
+```bash
+pnpm db:types
+```
+
+This updates `lib/db/database.types.ts`. Custom types in `lib/db/types.ts` import from the generated file and won't be overwritten.
+
 ## Testing Payments
 
 To test Stripe payments, use the following test card details:
